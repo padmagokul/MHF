@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:activiti="http://activiti.org/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC" xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI" typeLanguage="http://www.w3.org/2001/XMLSchema" expressionLanguage="http://www.w3.org/1999/XPath" targetNamespace="http://www.activiti.org/test">
+  <process id="votingSubProcessMHF" name="Approve Data Access Voting Sub Process " isExecutable="true">
+    <documentation>[MHF]This is a voting process used as sub process in the asset approval workflow. It is not intended to be used standalone.</documentation>
+    <startEvent id="votestartevent1" name="Start"></startEvent>
+    <subProcess id="votingsubprocess1" name="Vote">
+      <multiInstanceLoopCharacteristics isSequential="false" activiti:collection="voters" activiti:elementVariable="voter">
+        <completionCondition>${completion}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+      <startEvent id="votingstartevent2" name="Start"></startEvent>
+      <scriptTask id="setCommentscripttask1" name="Setting Comment Variable" scriptFormat="groovy" activiti:autoStoreVariables="false"></scriptTask>
+      <sequenceFlow id="setCommentflow2" sourceRef="votingstartevent2" targetRef="setCommentscripttask1"></sequenceFlow>
+      <userTask id="voteusertask1" name="Approve/Reject Access Request" activiti:candidateUsers="{user(${voter})}">
+        <extensionElements>
+          <activiti:formProperty id="commentHistoryDGA" name="Comment History" type="plainText" default="${commentHistory}" writable="false"></activiti:formProperty>
+          <activiti:formProperty id="approverComment" name="Comment" type="plainText" default="${defaultComment}"></activiti:formProperty>
+          <activiti:formProperty id="approve" name="Approve" type="button" default="false"></activiti:formProperty>
+          <activiti:formProperty id="reject" name="Reject" type="button" default="false"></activiti:formProperty>
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="voteUserTaskflow3" sourceRef="setCommentscripttask1" targetRef="voteusertask1"></sequenceFlow>
+      <endEvent id="voteendevent3" name="End"></endEvent>
+      <scriptTask id="storeCommentscripttask5" name="Store Comment" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[/*
+Script Name: Checking Comment
+Author: Lucid
+Version: v1.0
+Version History: Initial Version
+Purpose: This script is to check comment if it is rejection
+*/
+def commentNotFound=false;
+def approverCommentMandatory=" ";
+if(reject==true && (approverComment==null || approverComment.toString().isEmpty()))
+{
+loggerApi.info("Comment Not Found for Data Owner & Steward Rejection")
+approverCommentMandatory="Comment is mandatory for Reject, please enter a comment";
+commentNotFound=true
+}
+execution.setVariable("approverCommentMandatory",approverCommentMandatory)
+loggerApi.info(approverCommentMandatory)
+execution.setVariable("commentNotFound",commentNotFound)
+]]></script>
+      </scriptTask>
+      <sequenceFlow id="checkCommentflow13" sourceRef="voteusertask1" targetRef="storeCommentscripttask5"></sequenceFlow>
+      <sequenceFlow id="flow1" sourceRef="storeCommentscripttask5" targetRef="voteendevent3"></sequenceFlow>
+    </subProcess>
+    <scriptTask id="listVotersscripttask2" name="Create List Of Users" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Create List Of Users
+Author: Lucid
+Version: v1.0
+Version History: Initial Version
+Purpose: This script is to list voters
+*/
+KEYWORD_TASK_NOTIFICATION = "TaskNotificationEnabled"
+
+void stopDefaultMailsfromDGC(def workflowProcessID){
+   def  workflowConfigurations = workflowDefinitionApi.getWorkflowDefinitionByProcessId(workflowProcessID).getConfigurationVariables()
+   def updatedConfigMap = workflowConfigurations.findAll{def key, value -> key =~ KEYWORD_TASK_NOTIFICATION}.collectEntries{def k,v -> [(k):(false)]}
+   //loggerApi("Updated Config Map -> "+updatedConfigMap.toString())
+   execution.setVariables(updatedConfigMap)
+}
+
+execution.setVariables(stopDefaultMailsfromDGC("votingSubProcessEDLDataAccess"))
+
+def voterUserExpression = execution.getVariable("voterUserExpression")
+loggerApi.info(voterUserExpression)
+final Set<String> voters = new HashSet<>();
+
+		for (String userExpression : utility.toList(voterUserExpression)) {
+			voters.addAll(users.getUserNamesWithError(userExpression));
+		}
+
+		execution.setVariable("voters", new ArrayList<>(voters));
+loggerApi.info("Inside creating list of voters")
+loggerApi.info(voters.toString())
+execution.setVariable("completion", Boolean.FALSE);
+execution.setVariable("votingResult", []);]]></script>
+    </scriptTask>
+    <sequenceFlow id="listVoterflow4" sourceRef="votestartevent1" targetRef="listVotersscripttask2"></sequenceFlow>
+    <sequenceFlow id="votingflow5" sourceRef="listVotersscripttask2" targetRef="votingsubprocess1"></sequenceFlow>
+    <scriptTask id="countingVotesscripttask6" name="Counting Votes" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Counting Votes
+Author: Lucid
+Version: v1.0
+Version History: Initial Version
+Purpose: This script is to count votes
+*/
+def voting = execution.getVariable("votingResult")
+loggerApi.info("Voting New script --> " + voting)
+boolean result = getResult(voting, execution)
+execution.setVariable("votingSuccess", result)
+loggerApi.info("Result -->" + result)
+
+def getResult(voting, execution) {
+    Long percentage = (Long) execution.getVariable("votePercentage");
+    if (!voting.isEmpty()) {
+        int requiredToVote = ((List<String>) execution.getVariable("voters")).size();
+        int approved = getNumberOfApprovals(voting);
+        double fraction = percentage / 100.0;
+        return approved >= requiredToVote * fraction;
+    }
+    return false;
+}
+
+def getNumberOfApprovals(List<Map> voting) {
+    int approved = 0;
+    for (Map vote : voting) {
+        if (vote.approved) {
+            approved++;
+        }
+    }
+    return approved;
+}
+]]></script>
+    </scriptTask>
+    <sequenceFlow id="countflow16" sourceRef="votingsubprocess1" targetRef="countingVotesscripttask6"></sequenceFlow>
+    <endEvent id="votingendevent4" name="End"></endEvent>
+    <sequenceFlow id="votingflow17" sourceRef="countingVotesscripttask6" targetRef="votingendevent4"></sequenceFlow>
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_votingSubProcessMHF">
+    <bpmndi:BPMNPlane bpmnElement="votingSubProcessMHF" id="BPMNPlane_votingSubProcessMHF">
+      <bpmndi:BPMNShape bpmnElement="votestartevent1" id="BPMNShape_votestartevent1">
+        <omgdc:Bounds height="35.0" width="35.0" x="40.0" y="160.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="votingsubprocess1" id="BPMNShape_votingsubprocess1">
+        <omgdc:Bounds height="321.0" width="551.0" x="230.0" y="20.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="votingstartevent2" id="BPMNShape_votingstartevent2">
+        <omgdc:Bounds height="35.0" width="35.0" x="240.0" y="159.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="setCommentscripttask1" id="BPMNShape_setCommentscripttask1">
+        <omgdc:Bounds height="62.0" width="105.0" x="300.0" y="143.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="voteusertask1" id="BPMNShape_voteusertask1">
+        <omgdc:Bounds height="61.0" width="115.0" x="440.0" y="140.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="voteendevent3" id="BPMNShape_voteendevent3">
+        <omgdc:Bounds height="35.0" width="35.0" x="746.0" y="156.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="storeCommentscripttask5" id="BPMNShape_storeCommentscripttask5">
+        <omgdc:Bounds height="55.0" width="105.0" x="590.0" y="143.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="listVotersscripttask2" id="BPMNShape_listVotersscripttask2">
+        <omgdc:Bounds height="55.0" width="105.0" x="100.0" y="149.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="countingVotesscripttask6" id="BPMNShape_countingVotesscripttask6">
+        <omgdc:Bounds height="55.0" width="105.0" x="820.0" y="147.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="votingendevent4" id="BPMNShape_votingendevent4">
+        <omgdc:Bounds height="35.0" width="35.0" x="970.0" y="157.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="setCommentflow2" id="BPMNEdge_setCommentflow2">
+        <omgdi:waypoint x="275.0" y="176.0"></omgdi:waypoint>
+        <omgdi:waypoint x="300.0" y="174.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteUserTaskflow3" id="BPMNEdge_voteUserTaskflow3">
+        <omgdi:waypoint x="405.0" y="174.0"></omgdi:waypoint>
+        <omgdi:waypoint x="440.0" y="170.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="checkCommentflow13" id="BPMNEdge_checkCommentflow13">
+        <omgdi:waypoint x="555.0" y="170.0"></omgdi:waypoint>
+        <omgdi:waypoint x="590.0" y="170.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow1" id="BPMNEdge_flow1">
+        <omgdi:waypoint x="695.0" y="170.0"></omgdi:waypoint>
+        <omgdi:waypoint x="746.0" y="173.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="listVoterflow4" id="BPMNEdge_listVoterflow4">
+        <omgdi:waypoint x="75.0" y="177.0"></omgdi:waypoint>
+        <omgdi:waypoint x="100.0" y="176.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="votingflow5" id="BPMNEdge_votingflow5">
+        <omgdi:waypoint x="205.0" y="176.0"></omgdi:waypoint>
+        <omgdi:waypoint x="230.0" y="180.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="countflow16" id="BPMNEdge_countflow16">
+        <omgdi:waypoint x="781.0" y="180.0"></omgdi:waypoint>
+        <omgdi:waypoint x="820.0" y="174.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="votingflow17" id="BPMNEdge_votingflow17">
+        <omgdi:waypoint x="925.0" y="174.0"></omgdi:waypoint>
+        <omgdi:waypoint x="970.0" y="174.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
