@@ -19,11 +19,12 @@
         <flowNodeRef>markAsUnderReview</flowNodeRef>
         <flowNodeRef>exclusivegateway1</flowNodeRef>
         <flowNodeRef>markAsApproved</flowNodeRef>
+        <flowNodeRef>displayRejectionComment</flowNodeRef>
+        <flowNodeRef>usertask2</flowNodeRef>
       </lane>
       <lane id="businessStewardLane" name="Business Steward and Stakeholder">
         <flowNodeRef>voteSubprocess</flowNodeRef>
         <flowNodeRef>exclusivegateway2</flowNodeRef>
-        <flowNodeRef>notifyReject</flowNodeRef>
         <flowNodeRef>markAsAccepted</flowNodeRef>
         <flowNodeRef>notifyApproval</flowNodeRef>
       </lane>
@@ -48,6 +49,9 @@
         <activiti:formProperty id="voteWarningTimeDuration" name="Vote Warning Time Duration" type="string" default="B2D" readable="false" required="true"></activiti:formProperty>
         <activiti:formProperty id="acceptedTemplate" name="Template to send mail if asset is approved" type="string" default="approvedTemplate" readable="false" required="true"></activiti:formProperty>
         <activiti:formProperty id="rejectedTemplate" name="Template to send mail if asset is rejected" type="string" default="rejectedTemplate" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="secondaryLobConceptType" name="Secondary Lob Concept Type" type="string" default="Secondary Line of business" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="targetCommunity" name="Target Community" type="string" default="MDM" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="targetDomain" name="Target Domain" type="string" default="Enterprise Glossary" readable="false" required="true"></activiti:formProperty>
       </extensionElements>
     </startEvent>
     <endEvent id="endevent1" name="End"></endEvent>
@@ -74,6 +78,11 @@ def lobUUID = assetTypeApi.findAssetTypes(builders.get("FindAssetTypesRequest").
 loggerApi.info("Got LOB UUID: "+lobUUID)
 execution.setVariable("lineOfBusinessID", lobUUID[0])
 
+//Get LOB UUID to show only acronyms while adding acronym relations
+def secondaryLobUUID = assetTypeApi.findAssetTypes(builders.get("FindAssetTypesRequest").name(secondaryLobConceptType).build()).getResults()*.getId()
+loggerApi.info("Got LOB UUID: "+secondaryLobUUID)
+execution.setVariable("secondaryLineOfBusinessID", secondaryLobUUID[0])
+
 try{
     def candidateStatusId = statusApi.getStatusByName(candidateStatus).getId()
     //Method call
@@ -94,9 +103,11 @@ catch(Exception e){
         <activiti:formProperty id="assetName" name="Name" type="string" writable="false"></activiti:formProperty>
         <activiti:formProperty id="assetDefinition" name="Definition" type="textarea" writable="false"></activiti:formProperty>
         <activiti:formProperty id="assetNote" name="Reason For Proposal" type="textarea" writable="false"></activiti:formProperty>
-        <activiti:formProperty id="addLineOfBusiness" name="Related Line Of Business" type="term">
+        <activiti:formProperty id="addLineOfBusiness" name="Related Line Of Business" type="term" required="true">
           <activiti:value id="conceptType" name="${lineOfBusinessID}"></activiti:value>
-          <activiti:value id="multiValue" name="true"></activiti:value>
+        </activiti:formProperty>
+        <activiti:formProperty id="addSecondaryLob" name="Related Secondary Line Of Business" type="term">
+          <activiti:value id="conceptType" name="${secondaryLineOfBusinessID}"></activiti:value>
         </activiti:formProperty>
         <activiti:formProperty id="comments" name="Comments" type="textarea"></activiti:formProperty>
         <activiti:formProperty id="approve" name="Approve" type="button" required="true"></activiti:formProperty>
@@ -119,6 +130,7 @@ import com.collibra.dgc.workflow.api.exception.WorkflowException
 dgAnalystComments = comments.toString()
 loggerApi.info("--Comments--"+dgAnalystComments)
 
+//Check whether comments are provided
 if(dgAnalystComments.isEmpty()){
     loggerApi.error("Please provide comments.")
     String errorMessage = translation.getMessage("Please provide comments.")
@@ -133,23 +145,31 @@ else{
                         .baseResourceType(ResourceType.Asset).content(comments.toString()).build())
     loggerApi.info('--------Comments added successfully----------'+dgAnalystComment)
 
-    //Set the acronym asset to variable
-    def relatedAsset = execution.getVariable("relatedAsset")
+    //Set the Primary LOB asset to variable
+    def primaryLob = execution.getVariable("addLineOfBusiness")
+    loggerApi.info("related LOB asset"+primaryLob)
+
+    //Set the Secondary LOB asset to variable
+    def secondaryLob = execution.getVariable("addSecondaryLob")
+    loggerApi.info("related SLOB asset"+secondaryLob)
     
-    //Get Acronym Relation UUID
+    //Get LOB Relation UUID
     loggerApi.info("----Adding LOB to BT-------")
     lobRelationId = relationTypeApi.findRelationTypes(builders.get("FindRelationTypesRequest")
                                     .sourceTypeName(lobRelationSourceType).targetTypeName(lobRelationTargetType)
                                     .role(lobRelation).build()).getResults()*.getId()
     loggerApi.info("-----Got LOB id------"+lobRelationId)
-    addRelationToAsset(assetId, lobRelationId, relatedAsset)
 
-    loggerApi.info("---Domain ID----"+domainId)
+    //Add LOB Relation and get users from LOB asset
+    addRelationToAsset(primaryLob, lobRelationId[0], assetId)
+    def businessStewards = responsibleUsers(primaryLob, businessStewardRole)
+    def stakeholders = []
+    if(secondaryLob!=null){
+        addRelationToAsset(secondaryLob, lobRelationId[1], assetId)
+        stakeholders = responsibleUsers(secondaryLob, businessStewardRole)
+    }
 
-    def businessStewards = responsibleUsers(domainId, businessStewardRole)
-    def stakeholders = responsibleUsers(domainId, stakeholderRole)
-
-    //Adding the business stewards and stakeholders together
+    //Adding the business stewards and stakeholders(Business Steward of secondary LOB) together
     def voters = []
     groupBusinessStewards = businessStewards as Set
     groupStakeholders = stakeholders as Set
@@ -167,23 +187,24 @@ else{
 }
 
 //User defined methods start here
-//Method to add any acronym relation to asset
-    def addRelationToAsset(def sourceUuid,def relationTypeUuid,def targetUuid) {
-           if (targetUuid == null || targetUuid.isEmpty()){
+//Method to add LOB relation to asset
+    def addRelationToAsset(sourceUuid, relationTypeUuid, targetUuid) {
+           if (uuid2String(sourceUuid).isEmpty()){
                 return;
            }
        
            relationApi.addRelation(builders.get("AddRelationRequest")
-                   .sourceId(string2Uuid(sourceUuid)).targetId(targetUuid)
+                   .sourceId(sourceUuid).targetId(string2Uuid(targetUuid))
                    .typeId(relationTypeUuid).build())
+           loggerApi.info("----Added LOB's to BT-------")
     }
 
-//Method to find the users(ID's) that are responsible for the target domain with specified role
-    def responsibleUsers(newDomain, roleName) {
+//Method to find the users(ID's) that are responsible for the LOB's with specified role
+    def responsibleUsers(lobAsset, roleName) {
 
-        //Add the target domain to the list to get the users responsible for that domain
+        //Add the LOB ID to the list to get the users responsible for that LOB
         def responsibilityList = []
-        responsibilityList.add(newDomain)
+        responsibilityList.add(lobAsset)
 
         //Get Role ID for the given role
         def rolesIdList = roleApi.findRoles(builders.get('FindRolesRequest').name(roleName) 
@@ -193,7 +214,7 @@ else{
         def responsibleUserIds = responsibilityApi.findResponsibilities(builders.get('FindResponsibilitiesRequest')
                                     .resourceIds(responsibilityList).roleIds(rolesIdList) 
                                     .build()).getResults()*.getOwner()*.getId()
-        loggerApi.info("-------------User IDs for the responsibility on target domain------------ "+responsibleUserIds)
+        loggerApi.info("-------------User IDs for the responsibility on LOB------------ "+responsibleUserIds)
 
         if(responsibleUserIds.isEmpty())
            return 
@@ -204,7 +225,7 @@ else{
         }   
         def responsibleUserNames = userApi.findUsers(builders.get('FindUsersRequest').userIds(uuidList)
                                         .build()).getResults()*.getUserName()
-        loggerApi.info("-------------User names for the responsibility on target domain------------ "+responsibleUserNames)
+        loggerApi.info("-------------User names for the responsibility on LOB------------ "+responsibleUserNames)
         return responsibleUserNames
     }
 ]]></script>
@@ -264,21 +285,9 @@ catch(Exception e){
     </sequenceFlow>
     <exclusiveGateway id="exclusivegateway2" name="Exclusive Gateway"></exclusiveGateway>
     <sequenceFlow id="voteResultFlow" sourceRef="voteSubprocess" targetRef="exclusivegateway2"></sequenceFlow>
-    <scriptTask id="notifyReject" name="Notify Reject" scriptFormat="groovy" activiti:autoStoreVariables="false">
-      <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
-       def template = "${rejectedTemplate}";
-       if (usersIds.isEmpty()){
-            loggerApi.warn("No users to send a mail to, no mail will be send");
-       } else if (template == null) {
-            loggerApi.warn("No template for mail, no mail will be send");
-       } else {
-            mail.sendMails(usersIds, template, null, execution);
-       }]]></script>
-    </scriptTask>
-    <sequenceFlow id="rejectedFlow2" name="Rejected" sourceRef="exclusivegateway2" targetRef="notifyReject">
+    <sequenceFlow id="rejectedFlow2" name="Rejected" sourceRef="exclusivegateway2" targetRef="displayRejectionComment">
       <conditionExpression xsi:type="tFormalExpression"><![CDATA[${!votingResult}]]></conditionExpression>
     </sequenceFlow>
-    <sequenceFlow id="returnFlow" sourceRef="notifyReject" targetRef="markAsCandidate"></sequenceFlow>
     <scriptTask id="notifyRejection" name="Notify Rejection" scriptFormat="groovy" activiti:autoStoreVariables="false">
       <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
        def template = "${rejectedTemplate}";
@@ -290,11 +299,10 @@ catch(Exception e){
             mail.sendMails(usersIds, template, null, execution);
        }]]></script>
     </scriptTask>
-    <sequenceFlow id="rejectionFlow1" name="Rejected" sourceRef="exclusivegateway1" targetRef="notifyRejection"></sequenceFlow>
-    <sequenceFlow id="rejectedStatusFlow" sourceRef="notifyRejection" targetRef="markAsRejected"></sequenceFlow>
+    <sequenceFlow id="rejectionFlow1" name="Rejected" sourceRef="exclusivegateway1" targetRef="markAsRejected"></sequenceFlow>
     <scriptTask id="markAsAccepted" name="Mark As Accepted" scriptFormat="groovy" activiti:autoStoreVariables="false">
       <script><![CDATA[/*
-Script Name: Mark as Candidate Script
+Script Name: Mark as Accepted Script
 Author: Lucid
 Version: v1.0
 Version History: Implemented the way to get status ID by configuration variable
@@ -310,7 +318,16 @@ def changeStatus(assetId, acceptedStatusId){
     loggerApi.info("-----Candidate Status Id "+acceptedStatusId)
 }
 
-loggerApi.info("-----Comments----"+voteComments)
+loggerApi.info("-----Comments----"+voteComments.toString())
+def comments = voteComments.toString()
+if(comments.isEmpty()){
+    def voteProcessComments = "No comments added by voters"
+    execution.setVariable("voteProcessComments", voteProcessComments)
+}
+else{
+    execution.setVariable("voteProcessComments", comments)
+}
+
 try{
     def acceptedStatusId = statusApi.getStatusByName(acceptedStatus).getId()
     //Method call
@@ -329,10 +346,10 @@ catch(Exception e){
     </sequenceFlow>
     <scriptTask id="markAsRejected" name="Mark As Rejected" scriptFormat="groovy" activiti:autoStoreVariables="false">
       <script><![CDATA[/*
-Script Name: Mark as Candidate Script
+Script Name: Mark as Rejected Script
 Author: Lucid
 Version: v1.0
-Version History: Implemented the way to get status ID by configuration variable
+Version History: -
 Purpose: This script is used to change the status of the asset
 */
 
@@ -349,6 +366,7 @@ try{
     def rejectedStatusId = statusApi.getStatusByName(rejectedStatus).getId()
     //Method call
     changeStatus(assetId, rejectedStatusId)
+    assetApi.removeAsset(string2Uuid(assetId))
 }
 catch(Exception e){
     String errorMessage = translation.getMessage("Status: "+rejectedStatus+" not found")
@@ -370,7 +388,7 @@ catch(Exception e){
             mail.sendMails(usersIds, template, null, execution);
        }]]></script>
     </scriptTask>
-    <sequenceFlow id="notifyApprovalFlow" sourceRef="markAsAccepted" targetRef="notifyApproval"></sequenceFlow>
+    <sequenceFlow id="notifyApprovalFlow" sourceRef="markAsAccepted" targetRef="usertask2"></sequenceFlow>
     <scriptTask id="markAsApproved" name="Mark As Approved" scriptFormat="groovy" activiti:autoStoreVariables="false">
       <script><![CDATA[/*
 Script Name: Mark as Candidate Script
@@ -389,6 +407,15 @@ def changeStatus(assetId, approvedStatusId){
     loggerApi.info("-----Candidate Status Id "+approvedStatusId)
 }
 
+//Get the target community and domain ID from configuration variables
+def targetCommunityId = communityApi.findCommunities(builders.get("FindCommunitiesRequest").name(targetCommunity).build()).getResults()*.getId()
+loggerApi.info("------Target Community id-----"+targetCommunityId) 
+def targetDomainId = domainApi.findDomains(builders.get("FindDomainsRequest").communityId(targetCommunityId).name(targetDomain).build()).getResults()*.getId()
+loggerApi.info("------Target domain id-----"+targetDomainId) 
+
+//Move the asset to target domain 
+assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId)).domainId(targetDomainId).build())
+
 try{
     def approvedStatusId = statusApi.getStatusByName(approvedStatus).getId()
     //Method call
@@ -402,9 +429,42 @@ catch(Exception e){
     throw workflowException;
 }]]></script>
     </scriptTask>
-    <sequenceFlow id="approvedStatusFlow" sourceRef="notifyApproval" targetRef="markAsApproved"></sequenceFlow>
     <sequenceFlow id="endFlow2" sourceRef="markAsApproved" targetRef="endevent1"></sequenceFlow>
     <sequenceFlow id="voteFlow1" sourceRef="markAsUnderReview" targetRef="voteSubprocess"></sequenceFlow>
+    <userTask id="displayRejectionComment" name="Display Rejection Comment" activiti:candidateUsers="${dgAnalyst}">
+      <documentation>Please view the rejection comments and make the changes to the asset.</documentation>
+      <extensionElements>
+        <activiti:formProperty id="voteComments" name="Rejection Comment" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="proceed" name="Proceed" type="button" required="true"></activiti:formProperty>
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="markAsCandidateFlow2" sourceRef="displayRejectionComment" targetRef="markAsCandidate"></sequenceFlow>
+    <scriptTask id="notifyReject" name="Notify Reject" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
+       def template = "${rejectedTemplate}";
+       if (usersIds.isEmpty()){
+            loggerApi.warn("No users to send a mail to, no mail will be send");
+       } else if (template == null) {
+            loggerApi.warn("No template for mail, no mail will be send");
+       } else {
+            mail.sendMails(usersIds, template, null, execution);
+       }]]></script>
+    </scriptTask>
+    <userTask id="usertask2" name="Finalize proposed asset" activiti:candidateUsers="${dgAnalyst}">
+      <extensionElements>
+        <activiti:formProperty id="assetName" name="Name" type="string" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="assetDefinition" name="Definition" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="assetNote" name="Reason For Proposal" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="addLineOfBusiness" name="Related Line Of Business" type="term" writable="false">
+          <activiti:value id="conceptType" name="${lineOfBusinessID}"></activiti:value>
+          <activiti:value id="multiValue" name="true"></activiti:value>
+        </activiti:formProperty>
+        <activiti:formProperty id="comments" name="Your Comments" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="voteProcessComments" name="Voters Comments" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="approve" name="Approve" type="button" required="true"></activiti:formProperty>
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="flow1" sourceRef="usertask2" targetRef="markAsApproved"></sequenceFlow>
   </process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration">
     <bpmndi:BPMNPlane bpmnElement="Collaboration" id="BPMNPlane_Collaboration">
@@ -427,31 +487,28 @@ catch(Exception e){
         <omgdc:Bounds height="35.0" width="35.0" x="1360.0" y="190.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="markAsCandidate" id="BPMNShape_markAsCandidate">
-        <omgdc:Bounds height="55.0" width="115.0" x="410.0" y="330.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="115.0" x="410.0" y="300.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="usertask1" id="BPMNShape_usertask1">
-        <omgdc:Bounds height="55.0" width="115.0" x="600.0" y="330.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="105.0" x="610.0" y="300.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="addCommentsToAsset" id="BPMNShape_addCommentsToAsset">
-        <omgdc:Bounds height="55.0" width="111.0" x="790.0" y="330.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="105.0" x="800.0" y="300.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="markAsUnderReview" id="BPMNShape_markAsUnderReview">
-        <omgdc:Bounds height="55.0" width="111.0" x="910.0" y="384.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="105.0" x="920.0" y="384.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="exclusivegateway1" id="BPMNShape_exclusivegateway1">
-        <omgdc:Bounds height="40.0" width="40.0" x="1100.0" y="337.0"></omgdc:Bounds>
+        <omgdc:Bounds height="40.0" width="40.0" x="1100.0" y="307.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="voteSubprocess" id="BPMNShape_voteSubprocess">
-        <omgdc:Bounds height="55.0" width="115.0" x="500.0" y="500.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="115.0" x="600.0" y="500.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="exclusivegateway2" id="BPMNShape_exclusivegateway2">
         <omgdc:Bounds height="40.0" width="40.0" x="820.0" y="507.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape bpmnElement="notifyReject" id="BPMNShape_notifyReject">
-        <omgdc:Bounds height="55.0" width="105.0" x="505.0" y="600.0"></omgdc:Bounds>
-      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="notifyRejection" id="BPMNShape_notifyRejection">
-        <omgdc:Bounds height="55.0" width="105.0" x="1070.0" y="180.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="105.0" x="930.0" y="180.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="markAsAccepted" id="BPMNShape_markAsAccepted">
         <omgdc:Bounds height="55.0" width="115.0" x="920.0" y="500.0"></omgdc:Bounds>
@@ -460,66 +517,66 @@ catch(Exception e){
         <omgdc:Bounds height="55.0" width="115.0" x="1200.0" y="180.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="notifyApproval" id="BPMNShape_notifyApproval">
-        <omgdc:Bounds height="55.0" width="105.0" x="1120.0" y="500.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="105.0" x="1220.0" y="610.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="markAsApproved" id="BPMNShape_markAsApproved">
-        <omgdc:Bounds height="55.0" width="115.0" x="1210.0" y="330.0"></omgdc:Bounds>
+        <omgdc:Bounds height="55.0" width="115.0" x="1210.0" y="293.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="displayRejectionComment" id="BPMNShape_displayRejectionComment">
+        <omgdc:Bounds height="55.0" width="105.0" x="415.0" y="390.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="notifyReject" id="BPMNShape_notifyReject">
+        <omgdc:Bounds height="55.0" width="105.0" x="180.0" y="610.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="usertask2" id="BPMNShape_usertask2">
+        <omgdc:Bounds height="68.0" width="115.0" x="1210.0" y="378.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge bpmnElement="markAsCandidateFlow" id="BPMNEdge_markAsCandidateFlow">
         <omgdi:waypoint x="405.0" y="207.0"></omgdi:waypoint>
         <omgdi:waypoint x="467.0" y="207.0"></omgdi:waypoint>
-        <omgdi:waypoint x="467.0" y="330.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="300.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="checkProposedAssetFlow" id="BPMNEdge_checkProposedAssetFlow">
-        <omgdi:waypoint x="525.0" y="357.0"></omgdi:waypoint>
-        <omgdi:waypoint x="600.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="525.0" y="327.0"></omgdi:waypoint>
+        <omgdi:waypoint x="610.0" y="327.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="addCommentsFlow" id="BPMNEdge_addCommentsFlow">
-        <omgdi:waypoint x="715.0" y="357.0"></omgdi:waypoint>
-        <omgdi:waypoint x="790.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="715.0" y="327.0"></omgdi:waypoint>
+        <omgdi:waypoint x="800.0" y="327.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="reviewFlow" id="BPMNEdge_reviewFlow">
-        <omgdi:waypoint x="901.0" y="357.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1100.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="905.0" y="327.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1100.0" y="327.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="approvalFlow1" id="BPMNEdge_approvalFlow1">
-        <omgdi:waypoint x="1120.0" y="377.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1120.0" y="347.0"></omgdi:waypoint>
         <omgdi:waypoint x="1119.0" y="416.0"></omgdi:waypoint>
         <omgdi:waypoint x="1071.0" y="416.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1021.0" y="411.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1025.0" y="411.0"></omgdi:waypoint>
         <bpmndi:BPMNLabel>
-          <omgdc:Bounds height="16.0" width="53.0" x="1110.0" y="378.0"></omgdc:Bounds>
+          <omgdc:Bounds height="16.0" width="53.0" x="1110.0" y="348.0"></omgdc:Bounds>
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="voteResultFlow" id="BPMNEdge_voteResultFlow">
-        <omgdi:waypoint x="615.0" y="527.0"></omgdi:waypoint>
+        <omgdi:waypoint x="715.0" y="527.0"></omgdi:waypoint>
         <omgdi:waypoint x="820.0" y="527.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="rejectedFlow2" id="BPMNEdge_rejectedFlow2">
         <omgdi:waypoint x="840.0" y="547.0"></omgdi:waypoint>
         <omgdi:waypoint x="839.0" y="627.0"></omgdi:waypoint>
-        <omgdi:waypoint x="610.0" y="627.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="627.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="445.0"></omgdi:waypoint>
         <bpmndi:BPMNLabel>
           <omgdc:Bounds height="16.0" width="51.0" x="838.0" y="585.0"></omgdc:Bounds>
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge bpmnElement="returnFlow" id="BPMNEdge_returnFlow">
-        <omgdi:waypoint x="505.0" y="627.0"></omgdi:waypoint>
-        <omgdi:waypoint x="416.0" y="627.0"></omgdi:waypoint>
-        <omgdi:waypoint x="416.0" y="434.0"></omgdi:waypoint>
-        <omgdi:waypoint x="467.0" y="434.0"></omgdi:waypoint>
-        <omgdi:waypoint x="467.0" y="385.0"></omgdi:waypoint>
-      </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="rejectionFlow1" id="BPMNEdge_rejectionFlow1">
-        <omgdi:waypoint x="1120.0" y="337.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1122.0" y="235.0"></omgdi:waypoint>
-        <bpmndi:BPMNLabel>
-          <omgdc:Bounds height="16.0" width="51.0" x="1110.0" y="273.0"></omgdc:Bounds>
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge bpmnElement="rejectedStatusFlow" id="BPMNEdge_rejectedStatusFlow">
-        <omgdi:waypoint x="1175.0" y="207.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1120.0" y="307.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1120.0" y="207.0"></omgdi:waypoint>
         <omgdi:waypoint x="1200.0" y="207.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="51.0" x="1110.0" y="241.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="approvalFlow2" id="BPMNEdge_approvalFlow2">
         <omgdi:waypoint x="860.0" y="527.0"></omgdi:waypoint>
@@ -534,22 +591,26 @@ catch(Exception e){
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="notifyApprovalFlow" id="BPMNEdge_notifyApprovalFlow">
         <omgdi:waypoint x="1035.0" y="527.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1120.0" y="527.0"></omgdi:waypoint>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge bpmnElement="approvedStatusFlow" id="BPMNEdge_approvedStatusFlow">
-        <omgdi:waypoint x="1225.0" y="527.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1267.0" y="526.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1267.0" y="385.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1267.0" y="528.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1267.0" y="446.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="endFlow2" id="BPMNEdge_endFlow2">
-        <omgdi:waypoint x="1325.0" y="357.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1377.0" y="356.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1325.0" y="320.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1377.0" y="321.0"></omgdi:waypoint>
         <omgdi:waypoint x="1377.0" y="225.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="voteFlow1" id="BPMNEdge_voteFlow1">
-        <omgdi:waypoint x="910.0" y="411.0"></omgdi:waypoint>
-        <omgdi:waypoint x="557.0" y="411.0"></omgdi:waypoint>
-        <omgdi:waypoint x="557.0" y="500.0"></omgdi:waypoint>
+        <omgdi:waypoint x="920.0" y="411.0"></omgdi:waypoint>
+        <omgdi:waypoint x="657.0" y="411.0"></omgdi:waypoint>
+        <omgdi:waypoint x="657.0" y="500.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="markAsCandidateFlow2" id="BPMNEdge_markAsCandidateFlow2">
+        <omgdi:waypoint x="467.0" y="390.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="355.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow1" id="BPMNEdge_flow1">
+        <omgdi:waypoint x="1267.0" y="378.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1267.0" y="348.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

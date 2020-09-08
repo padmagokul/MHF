@@ -135,8 +135,7 @@ import com.collibra.dgc.core.api.dto.instance.comment.AddCommentRequest
 	commentBuilder = commentBuilder.parentId(string2Uuid(parent))
 	}
 
-	votersComments = commentApi.addComment(commentBuilder.build())
-	execution.setVariable("votersComments", votersComments)]]></script>
+	execution.setVariable("votersComments", comment)]]></script>
       </scriptTask>
       <sequenceFlow id="endVoteSubprocessFlow" sourceRef="storeComment" targetRef="endVoteSubProcess"></sequenceFlow>
       <sequenceFlow id="gatewayFlow5" sourceRef="addVoteOutcomeToList" targetRef="conditionalGateway5"></sequenceFlow>

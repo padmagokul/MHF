@@ -65,6 +65,7 @@ import com.collibra.dgc.workflow.api.exception.WorkflowException
     formProperties.put('dgAnalyst', dgAnalystUsers)
     formProperties.put('assetTypeId', typeOfAssetId)
     formProperties.put('domainId', domainId[0])
+    // formProperties.put('startUserId', requester)
 
     try{
         def workflowId = workflowDefinitionApi.getWorkflowDefinitionByProcessId(calledWorkflowName).getId()
