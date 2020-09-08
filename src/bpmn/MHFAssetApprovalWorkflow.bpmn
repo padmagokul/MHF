@@ -1,0 +1,556 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:activiti="http://activiti.org/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC" xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI" typeLanguage="http://www.w3.org/2001/XMLSchema" expressionLanguage="http://www.w3.org/1999/XPath" targetNamespace="http://www.collibra.com/apiv2">
+  <collaboration id="Collaboration">
+    <participant id="mhfApprovalWorkflow" name="MHF Approval Workflow" processRef="mhfApprovalProcess"></participant>
+  </collaboration>
+  <process id="mhfApprovalProcess" name="MHF Approval Workflow" isExecutable="true">
+    <documentation>This is a custom approval workflow involving various users, who will review the proposed asset.</documentation>
+    <laneSet id="laneSet_mhfApprovalProcess">
+      <lane id="startUserLane">
+        <flowNodeRef>startevent1</flowNodeRef>
+        <flowNodeRef>endevent1</flowNodeRef>
+        <flowNodeRef>notifyRejection</flowNodeRef>
+        <flowNodeRef>markAsRejected</flowNodeRef>
+      </lane>
+      <lane id="dgAnalystLane" name="Data Governance Analyst Lane">
+        <flowNodeRef>markAsCandidate</flowNodeRef>
+        <flowNodeRef>usertask1</flowNodeRef>
+        <flowNodeRef>addCommentsToAsset</flowNodeRef>
+        <flowNodeRef>markAsUnderReview</flowNodeRef>
+        <flowNodeRef>exclusivegateway1</flowNodeRef>
+        <flowNodeRef>markAsApproved</flowNodeRef>
+      </lane>
+      <lane id="businessStewardLane" name="Business Steward and Stakeholder">
+        <flowNodeRef>voteSubprocess</flowNodeRef>
+        <flowNodeRef>exclusivegateway2</flowNodeRef>
+        <flowNodeRef>notifyReject</flowNodeRef>
+        <flowNodeRef>markAsAccepted</flowNodeRef>
+        <flowNodeRef>notifyApproval</flowNodeRef>
+      </lane>
+    </laneSet>
+    <startEvent id="startevent1" name="Start">
+      <extensionElements>
+        <activiti:formProperty id="underReviewStatus" name="Under Review Status" type="string" default="Under Review" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="assetId" name="Asset ID" type="string" default="outputCreatedTermId" readable="false"></activiti:formProperty>
+        <activiti:formProperty id="acceptedStatus" name="Accepted Status" type="string" default="Accepted" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="rejectedStatus" name="Rejected Status" type="string" default="Rejected" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="representsRelation" name="Represents Relation" type="string" default="represents" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="lobRelationSourceType" name="LOB Relation Source Type" type="string" default="Line of Business" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="lobRelationTargetType" name="LOB Relation Target Type" type="string" default="Business Asset" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteCompletionPercentage" name="Vote Completion Percentage" type="long" default="100" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="lobConceptType" name="LOB Concept Type" type="string" default="Line of Business" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteTimeoutDuration" name="Vote completion time" type="string" default="B5D" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="candidateStatus" name="Candidate Status" type="string" default="Candidate" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="lobRelation" name="LOB Relation" type="string" default="associates" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="businessStewardRole" name="Business Steward Role" type="string" default="Business Steward" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="stakeholderRole" name="Stakeholder Role" type="string" default="Stakeholder" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="approvedStatus" name="Approved Status" type="string" default="Approved" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteWarningTimeDuration" name="Vote Warning Time Duration" type="string" default="B2D" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="acceptedTemplate" name="Template to send mail if asset is approved" type="string" default="approvedTemplate" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="rejectedTemplate" name="Template to send mail if asset is rejected" type="string" default="rejectedTemplate" readable="false" required="true"></activiti:formProperty>
+      </extensionElements>
+    </startEvent>
+    <endEvent id="endevent1" name="End"></endEvent>
+    <scriptTask id="markAsCandidate" name="Mark As Candidate" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Mark as Candidate Script
+Author: Lucid
+Version: v1.0
+Version History: Implemented the way to get status ID by configuration variable
+Purpose: This script is used to change the status of the asset
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+//Method to change the status of the asset
+def changeStatus(assetId, candidateStatusId){
+    def changedAsset = assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId))
+        .statusId(candidateStatusId).build())
+    loggerApi.info("-----Candidate Status Id "+candidateStatusId)
+}
+
+//Get LOB UUID to show only acronyms while adding acronym relations
+def lobUUID = assetTypeApi.findAssetTypes(builders.get("FindAssetTypesRequest").name(lobConceptType).build()).getResults()*.getId()
+loggerApi.info("Got LOB UUID: "+lobUUID)
+execution.setVariable("lineOfBusinessID", lobUUID[0])
+
+try{
+    def candidateStatusId = statusApi.getStatusByName(candidateStatus).getId()
+    //Method call
+    changeStatus(assetId, candidateStatusId)
+}
+catch(Exception e){
+    String errorMessage = translation.getMessage("Status: "+candidateStatus+" not found")
+    String errorTitle = translation.getMessage("statusNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}]]></script>
+    </scriptTask>
+    <sequenceFlow id="markAsCandidateFlow" sourceRef="startevent1" targetRef="markAsCandidate"></sequenceFlow>
+    <userTask id="usertask1" name="Check Proposed Asset" activiti:candidateUsers="${dgAnalyst}">
+      <documentation>Please review the Business Asset Created.</documentation>
+      <extensionElements>
+        <activiti:formProperty id="assetName" name="Name" type="string" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="assetDefinition" name="Definition" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="assetNote" name="Reason For Proposal" type="textarea" writable="false"></activiti:formProperty>
+        <activiti:formProperty id="addLineOfBusiness" name="Related Line Of Business" type="term">
+          <activiti:value id="conceptType" name="${lineOfBusinessID}"></activiti:value>
+          <activiti:value id="multiValue" name="true"></activiti:value>
+        </activiti:formProperty>
+        <activiti:formProperty id="comments" name="Comments" type="textarea"></activiti:formProperty>
+        <activiti:formProperty id="approve" name="Approve" type="button" required="true"></activiti:formProperty>
+        <activiti:formProperty id="reject" name="Reject" type="button" required="true"></activiti:formProperty>
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="checkProposedAssetFlow" sourceRef="markAsCandidate" targetRef="usertask1"></sequenceFlow>
+    <scriptTask id="addCommentsToAsset" name="Add Comments To Asset" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Add Comments Script
+Author: Lucid
+Version: v1.0
+Version History: -
+Purpose: This script is used to review and add comments to the asset.
+*/
+
+import com.collibra.dgc.core.api.model.ResourceType
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+dgAnalystComments = comments.toString()
+loggerApi.info("--Comments--"+dgAnalystComments)
+
+if(dgAnalystComments.isEmpty()){
+    loggerApi.error("Please provide comments.")
+    String errorMessage = translation.getMessage("Please provide comments.")
+    String errorTitle = translation.getMessage("commentsNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}
+else{
+    //Add Comments to asset
+    dgAnalystComment = commentApi.addComment(builders.get("AddCommentRequest").baseResourceId(string2Uuid(assetId))
+                        .baseResourceType(ResourceType.Asset).content(comments.toString()).build())
+    loggerApi.info('--------Comments added successfully----------'+dgAnalystComment)
+
+    //Set the acronym asset to variable
+    def relatedAsset = execution.getVariable("relatedAsset")
+    
+    //Get Acronym Relation UUID
+    loggerApi.info("----Adding LOB to BT-------")
+    lobRelationId = relationTypeApi.findRelationTypes(builders.get("FindRelationTypesRequest")
+                                    .sourceTypeName(lobRelationSourceType).targetTypeName(lobRelationTargetType)
+                                    .role(lobRelation).build()).getResults()*.getId()
+    loggerApi.info("-----Got LOB id------"+lobRelationId)
+    addRelationToAsset(assetId, lobRelationId, relatedAsset)
+
+    loggerApi.info("---Domain ID----"+domainId)
+
+    def businessStewards = responsibleUsers(domainId, businessStewardRole)
+    def stakeholders = responsibleUsers(domainId, stakeholderRole)
+
+    //Adding the business stewards and stakeholders together
+    def voters = []
+    groupBusinessStewards = businessStewards as Set
+    groupStakeholders = stakeholders as Set
+    if(groupStakeholders == null) 
+        voters = groupBusinessStewards
+    else
+        voters = groupBusinessStewards + groupStakeholders
+    loggerApi.info("-----Voters-----"+voters)
+
+    List<String> votersList = new ArrayList<String>();
+    votersList.addAll(voters);
+    loggerApi.info("----Voters List----"+votersList)
+    
+    execution.setVariable('votersList', votersList)
+}
+
+//User defined methods start here
+//Method to add any acronym relation to asset
+    def addRelationToAsset(def sourceUuid,def relationTypeUuid,def targetUuid) {
+           if (targetUuid == null || targetUuid.isEmpty()){
+                return;
+           }
+       
+           relationApi.addRelation(builders.get("AddRelationRequest")
+                   .sourceId(string2Uuid(sourceUuid)).targetId(targetUuid)
+                   .typeId(relationTypeUuid).build())
+    }
+
+//Method to find the users(ID's) that are responsible for the target domain with specified role
+    def responsibleUsers(newDomain, roleName) {
+
+        //Add the target domain to the list to get the users responsible for that domain
+        def responsibilityList = []
+        responsibilityList.add(newDomain)
+
+        //Get Role ID for the given role
+        def rolesIdList = roleApi.findRoles(builders.get('FindRolesRequest').name(roleName) 
+                            .build()).getResults()*.getId()
+
+        //Fetch the responsible user Id's
+        def responsibleUserIds = responsibilityApi.findResponsibilities(builders.get('FindResponsibilitiesRequest')
+                                    .resourceIds(responsibilityList).roleIds(rolesIdList) 
+                                    .build()).getResults()*.getOwner()*.getId()
+        loggerApi.info("-------------User IDs for the responsibility on target domain------------ "+responsibleUserIds)
+
+        if(responsibleUserIds.isEmpty())
+           return 
+
+        def uuidList =[]
+        for(userIds in responsibleUserIds){
+            uuidList.add(uuid2String(userIds))
+        }   
+        def responsibleUserNames = userApi.findUsers(builders.get('FindUsersRequest').userIds(uuidList)
+                                        .build()).getResults()*.getUserName()
+        loggerApi.info("-------------User names for the responsibility on target domain------------ "+responsibleUserNames)
+        return responsibleUserNames
+    }
+]]></script>
+    </scriptTask>
+    <sequenceFlow id="addCommentsFlow" sourceRef="usertask1" targetRef="addCommentsToAsset"></sequenceFlow>
+    <scriptTask id="markAsUnderReview" name="Mark As Under Review" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Mark as Candidate Script
+Author: Lucid
+Version: v1.0
+Version History: Implemented the way to get status ID by configuration variable
+Purpose: This script is used to change the status of the asset
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+//Method to change the status of the asset
+def changeStatus(assetId, underReviewStatusId){
+    def changedAsset = assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId))
+        .statusId(underReviewStatusId).build())
+    loggerApi.info("-----Candidate Status Id "+underReviewStatusId)
+}
+
+try{
+    def underReviewStatusId = statusApi.getStatusByName(underReviewStatus).getId()
+    //Method call
+    changeStatus(assetId, underReviewStatusId)
+}
+catch(Exception e){
+    String errorMessage = translation.getMessage("Status: "+underReviewStatus+" not found")
+    String errorTitle = translation.getMessage("statusNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}]]></script>
+    </scriptTask>
+    <sequenceFlow id="reviewFlow" sourceRef="addCommentsToAsset" targetRef="exclusivegateway1"></sequenceFlow>
+    <exclusiveGateway id="exclusivegateway1" name="Exclusive Gateway"></exclusiveGateway>
+    <callActivity id="voteSubprocess" name="Vote Subprocess" calledElement="mhfApprovalVotingSubProcess" activiti:inheritVariables="false">
+      <extensionElements>
+        <activiti:in sourceExpression="${'Please vote for the approval of the '}${item.getTypeName()}${'.'}${&quot; If you reject, please provide a reason for doing so.&quot;}" target="decisionInfo"></activiti:in>
+        <activiti:in source="voteCompletionPercentage" target="votePercentage"></activiti:in>
+        <activiti:in sourceExpression="${true}" target="addComments"></activiti:in>
+        <activiti:in sourceExpression="${true}" target="earlyComplete"></activiti:in>
+        <activiti:in source="voteTimeoutDuration" target="voteTimeoutDuration"></activiti:in>
+        <activiti:in sourceExpression="${&quot;Approve/Reject&quot;}" target="voteButtonLabel"></activiti:in>
+        <activiti:in sourceExpression="${&quot;Approval&quot;}" target="voteTaskName"></activiti:in>
+        <activiti:in source="sendVotingActionEmails" target="sendActionEmail"></activiti:in>
+        <activiti:in source="votersList" target="userNames"></activiti:in>
+        <activiti:in source="voteWarningTimeDuration" target="voteWarningTimeDuration"></activiti:in>
+        <activiti:out source="votingSuccess" target="votingResult"></activiti:out>
+        <activiti:out source="votersComments" target="voteComments"></activiti:out>
+      </extensionElements>
+    </callActivity>
+    <sequenceFlow id="approvalFlow1" name="Approved" sourceRef="exclusivegateway1" targetRef="markAsUnderReview">
+      <conditionExpression xsi:type="tFormalExpression"><![CDATA[${approve==true}]]></conditionExpression>
+    </sequenceFlow>
+    <exclusiveGateway id="exclusivegateway2" name="Exclusive Gateway"></exclusiveGateway>
+    <sequenceFlow id="voteResultFlow" sourceRef="voteSubprocess" targetRef="exclusivegateway2"></sequenceFlow>
+    <scriptTask id="notifyReject" name="Notify Reject" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
+       def template = "${rejectedTemplate}";
+       if (usersIds.isEmpty()){
+            loggerApi.warn("No users to send a mail to, no mail will be send");
+       } else if (template == null) {
+            loggerApi.warn("No template for mail, no mail will be send");
+       } else {
+            mail.sendMails(usersIds, template, null, execution);
+       }]]></script>
+    </scriptTask>
+    <sequenceFlow id="rejectedFlow2" name="Rejected" sourceRef="exclusivegateway2" targetRef="notifyReject">
+      <conditionExpression xsi:type="tFormalExpression"><![CDATA[${!votingResult}]]></conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="returnFlow" sourceRef="notifyReject" targetRef="markAsCandidate"></sequenceFlow>
+    <scriptTask id="notifyRejection" name="Notify Rejection" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
+       def template = "${rejectedTemplate}";
+       if (usersIds.isEmpty()){
+            loggerApi.warn("No users to send a mail to, no mail will be send");
+       } else if (template == null) {
+            loggerApi.warn("No template for mail, no mail will be send");
+       } else {
+            mail.sendMails(usersIds, template, null, execution);
+       }]]></script>
+    </scriptTask>
+    <sequenceFlow id="rejectionFlow1" name="Rejected" sourceRef="exclusivegateway1" targetRef="notifyRejection"></sequenceFlow>
+    <sequenceFlow id="rejectedStatusFlow" sourceRef="notifyRejection" targetRef="markAsRejected"></sequenceFlow>
+    <scriptTask id="markAsAccepted" name="Mark As Accepted" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Mark as Candidate Script
+Author: Lucid
+Version: v1.0
+Version History: Implemented the way to get status ID by configuration variable
+Purpose: This script is used to change the status of the asset
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+//Method to change the status of the asset
+def changeStatus(assetId, acceptedStatusId){
+    def changedAsset = assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId))
+        .statusId(acceptedStatusId).build())
+    loggerApi.info("-----Candidate Status Id "+acceptedStatusId)
+}
+
+loggerApi.info("-----Comments----"+voteComments)
+try{
+    def acceptedStatusId = statusApi.getStatusByName(acceptedStatus).getId()
+    //Method call
+    changeStatus(assetId, acceptedStatusId)
+}
+catch(Exception e){
+    String errorMessage = translation.getMessage("Status: "+acceptedStatus+" not found")
+    String errorTitle = translation.getMessage("statusNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}]]></script>
+    </scriptTask>
+    <sequenceFlow id="approvalFlow2" name="Approved" sourceRef="exclusivegateway2" targetRef="markAsAccepted">
+      <conditionExpression xsi:type="tFormalExpression"><![CDATA[${votingResult}]]></conditionExpression>
+    </sequenceFlow>
+    <scriptTask id="markAsRejected" name="Mark As Rejected" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Mark as Candidate Script
+Author: Lucid
+Version: v1.0
+Version History: Implemented the way to get status ID by configuration variable
+Purpose: This script is used to change the status of the asset
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+//Method to change the status of the asset
+def changeStatus(assetId, rejectedStatusId){
+    def changedAsset = assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId))
+        .statusId(rejectedStatusId).build())
+    loggerApi.info("-----Candidate Status Id "+rejectedStatusId)
+}
+
+try{
+    def rejectedStatusId = statusApi.getStatusByName(rejectedStatus).getId()
+    //Method call
+    changeStatus(assetId, rejectedStatusId)
+}
+catch(Exception e){
+    String errorMessage = translation.getMessage("Status: "+rejectedStatus+" not found")
+    String errorTitle = translation.getMessage("statusNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}]]></script>
+    </scriptTask>
+    <sequenceFlow id="endFlow1" sourceRef="markAsRejected" targetRef="endevent1"></sequenceFlow>
+    <scriptTask id="notifyApproval" name="Notify Approval" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[def usersIds = users.getUserIds("${dgAnalyst}");
+       def template = "${acceptedTemplate}";
+       if (usersIds.isEmpty()){
+            loggerApi.warn("No users to send a mail to, no mail will be send");
+       } else if (template == null) {
+            loggerApi.warn("No template for mail, no mail will be send");
+       } else {
+            mail.sendMails(usersIds, template, null, execution);
+       }]]></script>
+    </scriptTask>
+    <sequenceFlow id="notifyApprovalFlow" sourceRef="markAsAccepted" targetRef="notifyApproval"></sequenceFlow>
+    <scriptTask id="markAsApproved" name="Mark As Approved" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Mark as Candidate Script
+Author: Lucid
+Version: v1.0
+Version History: Implemented the way to get status ID by configuration variable
+Purpose: This script is used to change the status of the asset
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+//Method to change the status of the asset
+def changeStatus(assetId, approvedStatusId){
+    def changedAsset = assetApi.changeAsset(builders.get("ChangeAssetRequest").id(string2Uuid(assetId))
+        .statusId(approvedStatusId).build())
+    loggerApi.info("-----Candidate Status Id "+approvedStatusId)
+}
+
+try{
+    def approvedStatusId = statusApi.getStatusByName(approvedStatus).getId()
+    //Method call
+    changeStatus(assetId, approvedStatusId)
+}
+catch(Exception e){
+    String errorMessage = translation.getMessage("Status: "+approvedStatus+" not found")
+    String errorTitle = translation.getMessage("statusNotFound");
+    WorkflowException workflowException = new WorkflowException(errorMessage);
+    workflowException.setTitleMessage(errorTitle);
+    throw workflowException;
+}]]></script>
+    </scriptTask>
+    <sequenceFlow id="approvedStatusFlow" sourceRef="notifyApproval" targetRef="markAsApproved"></sequenceFlow>
+    <sequenceFlow id="endFlow2" sourceRef="markAsApproved" targetRef="endevent1"></sequenceFlow>
+    <sequenceFlow id="voteFlow1" sourceRef="markAsUnderReview" targetRef="voteSubprocess"></sequenceFlow>
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration">
+    <bpmndi:BPMNPlane bpmnElement="Collaboration" id="BPMNPlane_Collaboration">
+      <bpmndi:BPMNShape bpmnElement="mhfApprovalWorkflow" id="BPMNShape_mhfApprovalWorkflow">
+        <omgdc:Bounds height="572.0" width="1091.0" x="320.0" y="120.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="startUserLane" id="BPMNShape_startUserLane">
+        <omgdc:Bounds height="150.0" width="1071.0" x="340.0" y="120.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="dgAnalystLane" id="BPMNShape_dgAnalystLane">
+        <omgdc:Bounds height="181.0" width="1071.0" x="340.0" y="270.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="businessStewardLane" id="BPMNShape_businessStewardLane">
+        <omgdc:Bounds height="241.0" width="1071.0" x="340.0" y="451.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="startevent1" id="BPMNShape_startevent1">
+        <omgdc:Bounds height="35.0" width="35.0" x="370.0" y="190.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="endevent1" id="BPMNShape_endevent1">
+        <omgdc:Bounds height="35.0" width="35.0" x="1360.0" y="190.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="markAsCandidate" id="BPMNShape_markAsCandidate">
+        <omgdc:Bounds height="55.0" width="115.0" x="410.0" y="330.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="usertask1" id="BPMNShape_usertask1">
+        <omgdc:Bounds height="55.0" width="115.0" x="600.0" y="330.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="addCommentsToAsset" id="BPMNShape_addCommentsToAsset">
+        <omgdc:Bounds height="55.0" width="111.0" x="790.0" y="330.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="markAsUnderReview" id="BPMNShape_markAsUnderReview">
+        <omgdc:Bounds height="55.0" width="111.0" x="910.0" y="384.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="exclusivegateway1" id="BPMNShape_exclusivegateway1">
+        <omgdc:Bounds height="40.0" width="40.0" x="1100.0" y="337.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="voteSubprocess" id="BPMNShape_voteSubprocess">
+        <omgdc:Bounds height="55.0" width="115.0" x="500.0" y="500.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="exclusivegateway2" id="BPMNShape_exclusivegateway2">
+        <omgdc:Bounds height="40.0" width="40.0" x="820.0" y="507.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="notifyReject" id="BPMNShape_notifyReject">
+        <omgdc:Bounds height="55.0" width="105.0" x="505.0" y="600.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="notifyRejection" id="BPMNShape_notifyRejection">
+        <omgdc:Bounds height="55.0" width="105.0" x="1070.0" y="180.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="markAsAccepted" id="BPMNShape_markAsAccepted">
+        <omgdc:Bounds height="55.0" width="115.0" x="920.0" y="500.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="markAsRejected" id="BPMNShape_markAsRejected">
+        <omgdc:Bounds height="55.0" width="115.0" x="1200.0" y="180.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="notifyApproval" id="BPMNShape_notifyApproval">
+        <omgdc:Bounds height="55.0" width="105.0" x="1120.0" y="500.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="markAsApproved" id="BPMNShape_markAsApproved">
+        <omgdc:Bounds height="55.0" width="115.0" x="1210.0" y="330.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="markAsCandidateFlow" id="BPMNEdge_markAsCandidateFlow">
+        <omgdi:waypoint x="405.0" y="207.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="207.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="330.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="checkProposedAssetFlow" id="BPMNEdge_checkProposedAssetFlow">
+        <omgdi:waypoint x="525.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="600.0" y="357.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="addCommentsFlow" id="BPMNEdge_addCommentsFlow">
+        <omgdi:waypoint x="715.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="790.0" y="357.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="reviewFlow" id="BPMNEdge_reviewFlow">
+        <omgdi:waypoint x="901.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1100.0" y="357.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="approvalFlow1" id="BPMNEdge_approvalFlow1">
+        <omgdi:waypoint x="1120.0" y="377.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1119.0" y="416.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1071.0" y="416.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1021.0" y="411.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="53.0" x="1110.0" y="378.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteResultFlow" id="BPMNEdge_voteResultFlow">
+        <omgdi:waypoint x="615.0" y="527.0"></omgdi:waypoint>
+        <omgdi:waypoint x="820.0" y="527.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="rejectedFlow2" id="BPMNEdge_rejectedFlow2">
+        <omgdi:waypoint x="840.0" y="547.0"></omgdi:waypoint>
+        <omgdi:waypoint x="839.0" y="627.0"></omgdi:waypoint>
+        <omgdi:waypoint x="610.0" y="627.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="51.0" x="838.0" y="585.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="returnFlow" id="BPMNEdge_returnFlow">
+        <omgdi:waypoint x="505.0" y="627.0"></omgdi:waypoint>
+        <omgdi:waypoint x="416.0" y="627.0"></omgdi:waypoint>
+        <omgdi:waypoint x="416.0" y="434.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="434.0"></omgdi:waypoint>
+        <omgdi:waypoint x="467.0" y="385.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="rejectionFlow1" id="BPMNEdge_rejectionFlow1">
+        <omgdi:waypoint x="1120.0" y="337.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1122.0" y="235.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="51.0" x="1110.0" y="273.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="rejectedStatusFlow" id="BPMNEdge_rejectedStatusFlow">
+        <omgdi:waypoint x="1175.0" y="207.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1200.0" y="207.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="approvalFlow2" id="BPMNEdge_approvalFlow2">
+        <omgdi:waypoint x="860.0" y="527.0"></omgdi:waypoint>
+        <omgdi:waypoint x="920.0" y="527.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="53.0" x="850.0" y="481.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="endFlow1" id="BPMNEdge_endFlow1">
+        <omgdi:waypoint x="1315.0" y="207.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1360.0" y="207.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="notifyApprovalFlow" id="BPMNEdge_notifyApprovalFlow">
+        <omgdi:waypoint x="1035.0" y="527.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1120.0" y="527.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="approvedStatusFlow" id="BPMNEdge_approvedStatusFlow">
+        <omgdi:waypoint x="1225.0" y="527.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1267.0" y="526.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1267.0" y="385.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="endFlow2" id="BPMNEdge_endFlow2">
+        <omgdi:waypoint x="1325.0" y="357.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1377.0" y="356.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1377.0" y="225.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteFlow1" id="BPMNEdge_voteFlow1">
+        <omgdi:waypoint x="910.0" y="411.0"></omgdi:waypoint>
+        <omgdi:waypoint x="557.0" y="411.0"></omgdi:waypoint>
+        <omgdi:waypoint x="557.0" y="500.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>

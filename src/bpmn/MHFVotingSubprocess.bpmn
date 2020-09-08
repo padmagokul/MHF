@@ -1,0 +1,432 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:activiti="http://activiti.org/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC" xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI" typeLanguage="http://www.w3.org/2001/XMLSchema" expressionLanguage="http://www.w3.org/1999/XPath" targetNamespace="http://www.collibra.com/apiv2">
+  <process id="mhfApprovalVotingSubProcess" name="MHF Approval Voting Sub Process" isExecutable="true">
+    <documentation>Voting sub process</documentation>
+    <startEvent id="start2" name="Start">
+      <extensionElements>
+        <activiti:formProperty id="decisionInfo" name="Decision Info" type="string" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voterUserExpression" name="The user expression resulting to users required to vote" type="string" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteWarningTimeDuration" name="Time duration before a warning mail is send to vote" type="string" default="B3D" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteTimeoutDuration" name="Time duration before the voting is stopped and the process continued" type="string" default="B5D" required="true"></activiti:formProperty>
+        <activiti:formProperty id="addComments" name="Add voting comments to resource" type="boolean" default="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="addCommentsToParent" name="Provide the id if you want comments to be added to a parent comment" type="string"></activiti:formProperty>
+        <activiti:formProperty id="earlyComplete" name="Stop voting if votingPercentage is impossible to reach" type="boolean" default="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteButtonLabel" name="Label for the voting button" type="string" required="true"></activiti:formProperty>
+        <activiti:formProperty id="voteTaskName" name="The name of the actual voting task" type="string" required="true"></activiti:formProperty>
+        <activiti:formProperty id="sendActionEmail" name="Send a mail to the users allowing completing the vote by sending a email" type="boolean" default="false"></activiti:formProperty>
+        <activiti:formProperty id="resultTemplate" name="Email template for sending voting result" type="string" default="result"></activiti:formProperty>
+        <activiti:formProperty id="reminderTemplate" name="Email template for sending voting reminder" type="string" default="reminder"></activiti:formProperty>
+        <activiti:formProperty id="names" name="Email Template Names" type="string" default="resultTemplate,reminderTemplate" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="defaults" name="Defaults" type="string" default="result,reminder" readable="false" required="true"></activiti:formProperty>
+        <activiti:formProperty id="votePercentage" name="Vote Percentage" type="long" default="100" required="true"></activiti:formProperty>
+      </extensionElements>
+    </startEvent>
+    <subProcess id="voteSubProcess" name="Vote ">
+      <multiInstanceLoopCharacteristics isSequential="false" activiti:collection="voters" activiti:elementVariable="voter">
+        <completionCondition>${completion}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+      <startEvent id="startVoteSubProcess" name="Start"></startEvent>
+      <userTask id="vote" name="${voteTaskName}" activiti:candidateUsers="{user(${voter})}">
+        <documentation>${decisionInfo}</documentation>
+        <extensionElements>
+          <activiti:formProperty id="comment" name="What is your reason for approving/rejecting?" type="textarea" default=" "></activiti:formProperty>
+          <activiti:formProperty id="approve" name="Approve" type="button" default="false" required="true"></activiti:formProperty>
+          <activiti:formProperty id="reject" name="Reject" type="button" default="false" required="true"></activiti:formProperty>
+          <activiti:formProperty id="voteButton" name="${voteButtonLabel}" type="taskButton" writable="false"></activiti:formProperty>
+        </extensionElements>
+      </userTask>
+      <endEvent id="endVoteSubProcess" name="End"></endEvent>
+      <exclusiveGateway id="conditionalGateway5" name="Exclusive Gateway"></exclusiveGateway>
+      <sequenceFlow id="addCommentsFlow" name="Comments" sourceRef="conditionalGateway5" targetRef="storeComment">
+        <conditionExpression xsi:type="tFormalExpression"><![CDATA[${addComments}]]></conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="noCommentsFlow" name="No Comments" sourceRef="conditionalGateway5" targetRef="endVoteSubProcess">
+        <conditionExpression xsi:type="tFormalExpression"><![CDATA[${!addComments}]]></conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="setCommentVariableFlow" sourceRef="startVoteSubProcess" targetRef="createLocalVariableForComment"></sequenceFlow>
+      <scriptTask id="addVoteOutcomeToList" name="Add Vote Outcome To List" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[
+/*Add vote outcome to list script V 1.0
+Author: N. Padma Gokul
+Description: This script adds the vote outcome to 
+the list.
+*/
+
+def voter = execution.getVariable("voter");
+Boolean approved = (Boolean) execution.getVariable("approve");
+comment = execution.getVariable("comment");
+
+//Set the vote outcome of each voters to "vote" list
+loggerApi.info("--------Outcome Started----------")
+vote = [
+"name" : voter,
+"approved": approved,
+"comment": comment?.toString()
+]
+
+//Add the vote details to "votingResult" list
+loggerApi.info("--------Outcome Ends----------")
+voting = execution.getVariable("votingResult");
+voting.add(vote);
+
+//Pass the values to the "checkEarlyComplete" method
+checkEarlyComplete(execution, voting);
+
+loggerApi.info("--------Got Vote results----------")
+execution.setVariable("votingResult", voting);
+
+/* Method to check if the voting process is completed before deadline or vote percentage
+is impossible to reach */
+def checkEarlyComplete(execution, voting) {
+	Boolean earlyComplete = (Boolean) execution.getVariable("earlyComplete");
+	if (earlyComplete) {
+		Long percentage = (Long) execution.getVariable("votePercentage")
+		List<String> voters = (List<String>) execution.getVariable("voters");
+
+		double approved = 0;
+		double disapproved = 0;
+		double totalVoters = voters.size();
+		for (Map vote : voting) {
+			if (vote.approved) {
+				approved++;
+			} else {
+				disapproved++;
+			}
+		}
+	loggerApi.info("--------Approvers---------- "+approved)
+	loggerApi.info("--------Disapprovers---------- "+disapproved)
+	loggerApi.info("--------totalVoters---------- "+totalVoters)
+	loggerApi.info("--------percentage----------- "+percentage)
+
+		if (approved / totalVoters >= percentage / 100.0) {
+			loggerApi.info("--------Approve Check----------")
+			execution.setVariable("completion", Boolean.TRUE);
+		} else if (disapproved / totalVoters > (100 - percentage) / 100.0) {
+			loggerApi.info("--------Disapprove Check----------")
+			execution.setVariable("completion", Boolean.TRUE);
+		}
+	}
+}
+
+loggerApi.info("----Vote outcome added------")]]></script>
+      </scriptTask>
+      <sequenceFlow id="addVoteOutcomeToListFlow" sourceRef="vote" targetRef="checkRejectionComment"></sequenceFlow>
+      <scriptTask id="storeComment" name="Store Comment" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[/*
+Script Name: Add Comments Script
+Author: N. Padma Gokul
+Version: v1.0
+Version History: -
+Purpose: This script is used to add comments to the asset.
+*/
+
+import com.collibra.dgc.core.api.dto.instance.comment.AddCommentRequest
+
+	def commentValue = execution.getVariable("comment")
+	if (comment == null || comment.toString().isEmpty()) {
+		loggerApi.info("Comment empty, not adding anything")
+		return;
+	}
+	def parent = execution.getVariable("addCommentsToParent")
+
+	def commentBuilder = AddCommentRequest.builder().content(comment.toString()).baseResourceId(item.getId()).baseResourceType(item.getType())
+
+	if (parent != null){
+	commentBuilder = commentBuilder.parentId(string2Uuid(parent))
+	}
+
+	votersComments = commentApi.addComment(commentBuilder.build())
+	execution.setVariable("votersComments", votersComments)]]></script>
+      </scriptTask>
+      <sequenceFlow id="endVoteSubprocessFlow" sourceRef="storeComment" targetRef="endVoteSubProcess"></sequenceFlow>
+      <sequenceFlow id="gatewayFlow5" sourceRef="addVoteOutcomeToList" targetRef="conditionalGateway5"></sequenceFlow>
+      <scriptTask id="createLocalVariableForComment" name="Create Local Variable For Comment" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[execution.setVariableLocal("comment", "");]]></script>
+      </scriptTask>
+      <sequenceFlow id="voteTaskFlow" sourceRef="createLocalVariableForComment" targetRef="vote"></sequenceFlow>
+      <scriptTask id="sendRemainderMail" name="Send Remainder Mail" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[
+          def usersIds = users.getUserIds("user(${voter})");
+          def template = "${reminderTemplate}";
+           if (usersIds.isEmpty()){
+                loggerApi.warn("No users to send a mail to, no mail will be send");
+           } else if (template == null) {
+                loggerApi.warn("No template for mail, no mail will be send");
+           } else {
+                mail.sendMails(usersIds, template, null, execution);
+           }
+       ]]></script>
+      </scriptTask>
+      <boundaryEvent id="sendRemainderMailTimer" attachedToRef="vote" cancelActivity="true">
+        <timerEventDefinition>
+          <timeDuration>${voteWarningTimeDuration}</timeDuration>
+        </timerEventDefinition>
+      </boundaryEvent>
+      <sequenceFlow id="flow3" sourceRef="sendRemainderMailTimer" targetRef="sendRemainderMail"></sequenceFlow>
+      <scriptTask id="checkRejectionComment" name="Check Rejection Comment" scriptFormat="groovy" activiti:autoStoreVariables="false">
+        <script><![CDATA[/*
+Script Name: Check Rejection Comments Script
+Author: Lucid
+Version: v1.0
+Version History: -
+Purpose: This script is used to check whether any rejection comments are given.
+*/
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+def commentValue = execution.getVariable("comment")
+def stringComment = commentValue.toString()
+
+if (reject==true && stringComment.isEmpty()) {
+	loggerApi.error("Please provide rejection comments.")
+	String errorMessage = translation.getMessage("Please provide rejection comments.")
+	String errorTitle = translation.getMessage("commentsNotFound");
+	WorkflowException workflowException = new WorkflowException(errorMessage);
+	workflowException.setTitleMessage(errorTitle);
+	throw workflowException;
+}
+]]></script>
+      </scriptTask>
+      <sequenceFlow id="flow4" sourceRef="checkRejectionComment" targetRef="addVoteOutcomeToList"></sequenceFlow>
+    </subProcess>
+    <boundaryEvent id="voteCompletionTimer" attachedToRef="voteSubProcess" cancelActivity="true">
+      <timerEventDefinition>
+        <timeDuration>${voteTimeoutDuration}</timeDuration>
+      </timerEventDefinition>
+    </boundaryEvent>
+    <endEvent id="end2" name="End"></endEvent>
+    <scriptTask id="checkOptionalVariables" name="Check Optional Variables" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*
+Script Name: Check Optional Variables Script
+Author: N. Padma Gokul
+Version: v1.0
+Version History: -
+Purpose: This script is used to check for any optional
+variables before vote starts.
+*/
+
+import com.collibra.dgc.workflow.api.exception.WorkflowException
+
+loggerApi.info("----Vote process Started------")
+//Get the result and remainder templates and its value
+List<String> namesList = utility.toList(execution.getVariable("names"))
+List<String> defaultsList = utility.toList(execution.getVariable("defaults"))
+
+	//Throw exception if nameList and defaultList size are not equal
+    if(namesList.size() != defaultsList.size()) {
+	    loggerApi.error("names list contains " + namesList.size() + " elements while the default values list contains " +
+					defaultsList.size() + " elements. Those sizes should be equal.")
+
+	    String errorMessage = translation.getMessage("workflowNamesAndDefaultsSizeDontMatch",namesList.size(),defaultsList.size())
+	    String errorTitle = translation.getMessage("workflowValueNotAllowed");
+	    WorkflowException workflowException = new WorkflowException(errorMessage);
+	    workflowException.setTitleMessage(errorTitle);
+	    throw workflowException;
+	}
+
+	//Set default value to nameList if nameList is empty 
+	for (int i = 0; i < namesList.size(); i++) {
+		String currentName = namesList.get(i).trim();
+		String currentDefault = defaultsList.get(i);
+		if (!execution.hasVariable(currentName)) {
+			execution.setVariable(currentName, currentDefault);
+		}
+	}]]></script>
+    </scriptTask>
+    <sequenceFlow id="checkOptionalVariablesFlow" sourceRef="start2" targetRef="checkOptionalVariables"></sequenceFlow>
+    <scriptTask id="createListOfVoters" name="Create List Of Voters" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*Create voters list V 1.0
+Author: N. Padma Gokul
+Description: This script is used to create Voters list
+*/
+
+final Set<String> voters = new HashSet<>();
+
+loggerApi.info("---Voters List Created----")
+execution.setVariable("voters",userNames);
+execution.setVariable("votingResult", []);
+execution.setVariable("completion", Boolean.FALSE);
+
+]]></script>
+    </scriptTask>
+    <scriptTask id="countVotingResult" name="Count Voting Result" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[/*Count voting result script V 1.0
+Author: N. Padma Gokul
+Description: This script is used to count the number of votes.
+*/
+
+def voting = execution.getVariable("votingResult")
+//Pass the value to the method "getResult"
+boolean result = getResult(voting, execution)
+loggerApi.info("--------Result--------- "+result)
+execution.setVariable("votingSuccess", result)
+
+//Method to calculate the voting result
+def getResult(voting, execution) {
+		Long percentage = (Long) execution.getVariable("votePercentage")
+		if (!voting.isEmpty()) {
+			int requiredToVote = ((List<String>) execution.getVariable("voters")).size();
+			//Pass the value to the method "getNumberOfApprovals"
+			int approved = getNumberOfApprovals(voting);
+			double fraction = percentage / 100.0;
+			return approved >= requiredToVote * fraction;
+		}
+		return false;
+	}
+
+//Method to get no of approvals in votes
+def getNumberOfApprovals(List<Map> voting) {
+		int approved = 0;
+		for (Map vote : voting) {
+			if (vote.approved) {
+				approved++;
+			}
+		}
+		return approved;
+	}
+
+loggerApi.info("----Vote Successful------")]]></script>
+    </scriptTask>
+    <sequenceFlow id="setVoteResultToTrueFlow" sourceRef="voteCompletionTimer" targetRef="setVoteResultToTrue"></sequenceFlow>
+    <sequenceFlow id="earlyCompleteFlow" sourceRef="voteSubProcess" targetRef="countVotingResult"></sequenceFlow>
+    <sequenceFlow id="createListOfVotersFlow" sourceRef="checkOptionalVariables" targetRef="createListOfVoters"></sequenceFlow>
+    <sequenceFlow id="subprocessFlow" sourceRef="createListOfVoters" targetRef="voteSubProcess"></sequenceFlow>
+    <scriptTask id="setVoteResultToTrue" name="Set Vote Result To True" scriptFormat="groovy" activiti:autoStoreVariables="false">
+      <script><![CDATA[result = true
+execution.setVariable("votingSuccess", result)]]></script>
+    </scriptTask>
+    <sequenceFlow id="voteEndFlow2" sourceRef="setVoteResultToTrue" targetRef="end2"></sequenceFlow>
+    <sequenceFlow id="voteEndFlow1" sourceRef="countVotingResult" targetRef="end2"></sequenceFlow>
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_mhfApprovalVotingSubProcess">
+    <bpmndi:BPMNPlane bpmnElement="mhfApprovalVotingSubProcess" id="BPMNPlane_mhfApprovalVotingSubProcess">
+      <bpmndi:BPMNShape bpmnElement="start2" id="BPMNShape_start2">
+        <omgdc:Bounds height="35.0" width="35.0" x="55.0" y="130.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="voteSubProcess" id="BPMNShape_voteSubProcess">
+        <omgdc:Bounds height="241.0" width="940.0" x="177.0" y="200.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="startVoteSubProcess" id="BPMNShape_startVoteSubProcess">
+        <omgdc:Bounds height="35.0" width="35.0" x="190.0" y="279.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="vote" id="BPMNShape_vote">
+        <omgdc:Bounds height="61.0" width="105.0" x="390.0" y="266.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="sendRemainderMailTimer" id="BPMNShape_sendRemainderMailTimer">
+        <omgdc:Bounds height="30.0" width="30.0" x="430.0" y="310.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="endVoteSubProcess" id="BPMNShape_endVoteSubProcess">
+        <omgdc:Bounds height="35.0" width="35.0" x="1050.0" y="279.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="conditionalGateway5" id="BPMNShape_conditionalGateway5">
+        <omgdc:Bounds height="40.0" width="40.0" x="790.0" y="276.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="addVoteOutcomeToList" id="BPMNShape_addVoteOutcomeToList">
+        <omgdc:Bounds height="55.0" width="111.0" x="660.0" y="269.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="storeComment" id="BPMNShape_storeComment">
+        <omgdc:Bounds height="55.0" width="105.0" x="870.0" y="269.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="createLocalVariableForComment" id="BPMNShape_createLocalVariableForComment">
+        <omgdc:Bounds height="58.0" width="131.0" x="240.0" y="268.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="sendRemainderMail" id="BPMNShape_sendRemainderMail">
+        <omgdc:Bounds height="61.0" width="105.0" x="390.0" y="360.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="checkRejectionComment" id="BPMNShape_checkRejectionComment">
+        <omgdc:Bounds height="55.0" width="115.0" x="520.0" y="269.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="voteCompletionTimer" id="BPMNShape_voteCompletionTimer">
+        <omgdc:Bounds height="30.0" width="30.0" x="1103.0" y="383.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="end2" id="BPMNShape_end2">
+        <omgdc:Bounds height="35.0" width="35.0" x="1320.0" y="210.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="checkOptionalVariables" id="BPMNShape_checkOptionalVariables">
+        <omgdc:Bounds height="61.0" width="112.0" x="15.0" y="197.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="createListOfVoters" id="BPMNShape_createListOfVoters">
+        <omgdc:Bounds height="55.0" width="130.0" x="8.0" y="293.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="countVotingResult" id="BPMNShape_countVotingResult">
+        <omgdc:Bounds height="55.0" width="121.0" x="1160.0" y="293.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="setVoteResultToTrue" id="BPMNShape_setVoteResultToTrue">
+        <omgdc:Bounds height="55.0" width="113.0" x="1168.0" y="370.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="addCommentsFlow" id="BPMNEdge_addCommentsFlow">
+        <omgdi:waypoint x="830.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="870.0" y="296.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="100.0" x="810.0" y="252.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="noCommentsFlow" id="BPMNEdge_noCommentsFlow">
+        <omgdi:waypoint x="810.0" y="316.0"></omgdi:waypoint>
+        <omgdi:waypoint x="809.0" y="390.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1067.0" y="390.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1067.0" y="314.0"></omgdi:waypoint>
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds height="16.0" width="100.0" x="808.0" y="370.0"></omgdc:Bounds>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="setCommentVariableFlow" id="BPMNEdge_setCommentVariableFlow">
+        <omgdi:waypoint x="225.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="240.0" y="297.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="addVoteOutcomeToListFlow" id="BPMNEdge_addVoteOutcomeToListFlow">
+        <omgdi:waypoint x="495.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="520.0" y="296.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="endVoteSubprocessFlow" id="BPMNEdge_endVoteSubprocessFlow">
+        <omgdi:waypoint x="975.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1050.0" y="296.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="gatewayFlow5" id="BPMNEdge_gatewayFlow5">
+        <omgdi:waypoint x="771.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="790.0" y="296.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteTaskFlow" id="BPMNEdge_voteTaskFlow">
+        <omgdi:waypoint x="371.0" y="297.0"></omgdi:waypoint>
+        <omgdi:waypoint x="390.0" y="296.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow3" id="BPMNEdge_flow3">
+        <omgdi:waypoint x="445.0" y="340.0"></omgdi:waypoint>
+        <omgdi:waypoint x="442.0" y="360.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow4" id="BPMNEdge_flow4">
+        <omgdi:waypoint x="635.0" y="296.0"></omgdi:waypoint>
+        <omgdi:waypoint x="660.0" y="296.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="checkOptionalVariablesFlow" id="BPMNEdge_checkOptionalVariablesFlow">
+        <omgdi:waypoint x="72.0" y="165.0"></omgdi:waypoint>
+        <omgdi:waypoint x="71.0" y="197.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="setVoteResultToTrueFlow" id="BPMNEdge_setVoteResultToTrueFlow">
+        <omgdi:waypoint x="1133.0" y="398.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1168.0" y="397.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="earlyCompleteFlow" id="BPMNEdge_earlyCompleteFlow">
+        <omgdi:waypoint x="1117.0" y="320.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1160.0" y="320.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="createListOfVotersFlow" id="BPMNEdge_createListOfVotersFlow">
+        <omgdi:waypoint x="71.0" y="258.0"></omgdi:waypoint>
+        <omgdi:waypoint x="73.0" y="293.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="subprocessFlow" id="BPMNEdge_subprocessFlow">
+        <omgdi:waypoint x="138.0" y="320.0"></omgdi:waypoint>
+        <omgdi:waypoint x="177.0" y="320.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteEndFlow2" id="BPMNEdge_voteEndFlow2">
+        <omgdi:waypoint x="1281.0" y="397.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1337.0" y="397.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1337.0" y="245.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="voteEndFlow1" id="BPMNEdge_voteEndFlow1">
+        <omgdi:waypoint x="1220.0" y="293.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1220.0" y="227.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1320.0" y="227.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>

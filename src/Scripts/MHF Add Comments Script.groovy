@@ -43,9 +43,13 @@ else{
     def stakeholders = responsibleUsers(domainId, stakeholderRole)
 
     //Adding the business stewards and stakeholders together
+    def voters = []
     groupBusinessStewards = businessStewards as Set
     groupStakeholders = stakeholders as Set
-    def voters = groupBusinessStewards + groupStakeholders
+    if(groupStakeholders == null) 
+        voters = groupBusinessStewards
+    else
+        voters = groupBusinessStewards + groupStakeholders
     loggerApi.info("-----Voters-----"+voters)
 
     List<String> votersList = new ArrayList<String>();
